@@ -6,9 +6,15 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util.limited_size_dict import LimitedSizeDict
 
-from .const import DATA_TRACE, DATA_TRACE_STORE, DATA_TRACES_RESTORED
+from .const import (
+    DATA_TRACE,
+    DATA_TRACE_STORE,
+    DATA_TRACES_RESTORED,
+    SIGNAL_TRACE_FINISHED,
+)
 from .models import ActionTrace, BaseTrace, RestoredTrace, TraceBuckets, TraceData
 
 _LOGGER = logging.getLogger(__name__)
@@ -98,6 +104,13 @@ def async_store_trace(
         trace_bucket.not_triggered.size_limit = stored_traces
         bucket = trace_bucket.bucket(trace.not_triggered)
         bucket[trace.run_id] = trace
+
+
+def async_finish_trace(hass: HomeAssistant, trace: ActionTrace) -> None:
+    """Mark a trace as finished and notify subscribers."""
+    trace.finished()
+    if not trace.not_triggered:
+        async_dispatcher_send(hass, SIGNAL_TRACE_FINISHED, trace)
 
 
 def _async_store_restored_trace(hass: HomeAssistant, trace: RestoredTrace) -> None:

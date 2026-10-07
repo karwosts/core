@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from pytest_unordered import unordered
 
-from homeassistant.components.trace import ActionTrace
+from homeassistant.components.trace import ActionTrace, async_finish_trace
 from homeassistant.components.trace.const import DATA_TRACE, DEFAULT_STORED_TRACES
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Context, CoreState, HomeAssistant, callback
@@ -1743,3 +1743,91 @@ async def test_not_triggered_trace_serialization(
     assert response["result"]["trace"]["trigger/0"][0]["result"] == {
         "reason": "mock_reason"
     }
+
+
+@pytest.mark.parametrize("domain", ["automation", "script"])
+async def test_subscribe_traces(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, domain: str
+) -> None:
+    """Test subscribing to script and automation run traces."""
+    sun_config = {
+        "id": "sun",
+        "triggers": {"platform": "event", "event_type": "test_event"},
+        "actions": {"event": "another_event"},
+    }
+    await _setup_automation_or_script(hass, domain, [sun_config])
+    await _run_automation_or_script(hass, domain, sun_config, "test_event")
+    await hass.async_block_till_done()
+
+    client = await hass_ws_client()
+    await client.send_json({"id": 1, "type": "trace/list", "domain": domain})
+    response = await client.receive_json()
+    assert response["success"]
+    existing_traces = response["result"]
+    assert len(existing_traces) == 1
+
+    await client.send_json({"id": 2, "type": "trace/subscribe"})
+    response = await client.receive_json()
+    assert response["success"]
+
+    # The first event is a snapshot of the stored traces.
+    response = await client.receive_json()
+    assert response["id"] == 2
+    assert response["type"] == "event"
+    assert response["event"] == {"traces": existing_traces}
+
+    await _run_automation_or_script(hass, domain, sun_config, "test_event")
+    await hass.async_block_till_done()
+
+    response = await client.receive_json()
+    assert response["id"] == 2
+    assert response["type"] == "event"
+    traces = response["event"]["traces"]
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace["domain"] == domain
+    assert trace["item_id"] == "sun"
+    assert trace["state"] == "stopped"
+    assert trace["script_execution"] == "finished"
+    assert trace["timestamp"]["finish"] is not None
+
+    await client.send_json({"id": 3, "type": "trace/list", "domain": domain})
+    response = await client.receive_json()
+    assert response["success"]
+    assert response["result"] == [*existing_traces, trace]
+
+
+async def test_subscribe_traces_skips_not_triggered(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Test not-triggered traces are not sent to subscribers."""
+    run = _serialize_trace(False, "ran")
+    hass_storage["trace.saved_traces"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "trace.saved_traces",
+        "data": {"automation.diag": [run, _serialize_trace(True, "mock_reason")]},
+    }
+    assert await async_setup_component(hass, "trace", {})
+    client = await hass_ws_client()
+    await client.send_json({"id": 1, "type": "trace/subscribe"})
+    response = await client.receive_json()
+    assert response["success"]
+
+    # The snapshot restores saved traces and leaves out not-triggered traces.
+    response = await client.receive_json()
+    assert response["event"] == {"traces": [run["short_dict"]]}
+
+    not_triggered = _DiagnosticActionTrace("diag", {"id": "diag"}, None, Context())
+    not_triggered.not_triggered = True
+    async_finish_trace(hass, not_triggered)
+    new_run = _DiagnosticActionTrace("diag", {"id": "diag"}, None, Context())
+    async_finish_trace(hass, new_run)
+
+    # Only the run trace is received, the not-triggered trace was skipped.
+    response = await client.receive_json()
+    assert [trace["run_id"] for trace in response["event"]["traces"]] == [
+        new_run.run_id
+    ]

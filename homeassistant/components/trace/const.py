@@ -3,11 +3,12 @@
 from typing import TYPE_CHECKING
 
 from homeassistant.util.hass_dict import HassKey
+from homeassistant.util.signal_type import SignalType
 
 if TYPE_CHECKING:
     from homeassistant.helpers.storage import Store
 
-    from .models import TraceData
+    from .models import ActionTrace, TraceData
 
 
 CONF_STORED_TRACES = "stored_traces"
@@ -15,3 +16,5 @@ DATA_TRACE: HassKey[TraceData] = HassKey("trace")
 DATA_TRACE_STORE: HassKey[Store[dict[str, list]]] = HassKey("trace_store")
 DATA_TRACES_RESTORED: HassKey[bool] = HassKey("trace_traces_restored")
 DEFAULT_STORED_TRACES = 5  # Stored traces per script or automation
+
+SIGNAL_TRACE_FINISHED: SignalType[ActionTrace] = SignalType("trace_finished")

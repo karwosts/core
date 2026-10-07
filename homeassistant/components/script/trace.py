@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.trace import (
     CONF_STORED_TRACES,
     ActionTrace,
+    async_finish_trace,
     async_store_trace,
 )
 from homeassistant.core import Context, HomeAssistant
@@ -41,4 +42,4 @@ def trace_script(
         raise
     finally:
         if item_id:
-            trace.finished()
+            async_finish_trace(hass, trace)

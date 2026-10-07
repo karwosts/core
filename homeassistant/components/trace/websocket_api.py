@@ -26,7 +26,14 @@ from homeassistant.helpers.script import (
     debug_stop,
 )
 
-from .util import async_get_trace, async_list_contexts, async_list_traces
+from .const import DATA_TRACE, SIGNAL_TRACE_FINISHED
+from .models import ActionTrace
+from .util import (
+    async_get_trace,
+    async_list_contexts,
+    async_list_traces,
+    async_restore_traces,
+)
 
 TRACE_DOMAINS = ("automation", "script")
 
@@ -36,6 +43,7 @@ def async_setup(hass: HomeAssistant) -> None:
     """Set up the websocket API."""
     websocket_api.async_register_command(hass, websocket_trace_get)
     websocket_api.async_register_command(hass, websocket_trace_list)
+    websocket_api.async_register_command(hass, websocket_trace_subscribe)
     websocket_api.async_register_command(hass, websocket_trace_contexts)
     websocket_api.async_register_command(hass, websocket_breakpoint_clear)
     websocket_api.async_register_command(hass, websocket_breakpoint_list)
@@ -101,6 +109,44 @@ async def websocket_trace_list(
     traces = await async_list_traces(hass, wanted_domain, key)
 
     connection.send_result(msg["id"], traces)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({probatio.Required("type"): "trace/subscribe"})
+@websocket_api.async_response
+async def websocket_trace_subscribe(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Subscribe to script and automation run traces."""
+    await async_restore_traces(hass)
+
+    @callback
+    def trace_finished(trace: ActionTrace) -> None:
+        """Forward finished traces to websocket."""
+        connection.send_message(
+            websocket_api.event_message(msg["id"], {"traces": [trace.as_short_dict()]})
+        )
+
+    # No awaits past this point, so no trace can finish between the
+    # snapshot and connecting the signal.
+    connection.subscriptions[msg["id"]] = async_dispatcher_connect(
+        hass, SIGNAL_TRACE_FINISHED, trace_finished
+    )
+    connection.send_message(websocket_api.result_message(msg["id"]))
+    connection.send_message(
+        websocket_api.event_message(
+            msg["id"],
+            {
+                "traces": [
+                    trace.as_short_dict()
+                    for trace_bucket in hass.data[DATA_TRACE].values()
+                    for trace in trace_bucket.runs.values()
+                ]
+            },
+        )
+    )
 
 
 @websocket_api.require_admin
